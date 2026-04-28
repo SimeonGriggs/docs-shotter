@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Docs Shotter",
-  "description": "Capture any DOM element as PNG in both light and dark mode",
-  "version": "1.0.0",
+  "description": "Capture any DOM element or viewport as PNG screenshots in both light and dark mode, with optional padding",
+  "version": "0.1.0",
   "permissions": [
     "activeTab",
     "scripting",
