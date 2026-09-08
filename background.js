@@ -3,6 +3,13 @@
 // color scheme toggling, image cropping, and file downloads.
 
 const CAPTURE_DELAY_MS = 600; // wait for CSS transitions after theme toggle
+const HOVER_CLEAR_DELAY_MS = 280; // wait for :hover/:focus transitions to reverse
+const HOVER_SHIELD_ID = "ds-hover-block";
+
+function filenameForScheme(scheme, timestamp) {
+  const base = `docs-shotter-${timestamp}`;
+  return scheme === "dark" ? `${base}-darkmode.png` : `${base}.png`;
+}
 
 // Track state per tab
 const tabState = new Map();
@@ -13,6 +20,7 @@ async function startCapture(tabId, addPadding) {
 
   // Don't run on chrome:// or extension pages
   if (!tab.url || tab.url.startsWith("chrome://") || tab.url.startsWith("chrome-extension://")) {
+    await removeHoverShield(tabId);
     return;
   }
 
@@ -25,7 +33,7 @@ async function startCapture(tabId, addPadding) {
 
   try {
     // 1. Attach debugger first (before element selection starts)
-    await chrome.debugger.attach({ tabId: tab.id }, "1.3");
+    await attachDebugger(tab.id);
 
     tabState.set(tab.id, { active: true, tabId: tab.id, addPadding });
 
@@ -53,19 +61,20 @@ async function captureViewport(tabId) {
 
   // Don't run on chrome:// or extension pages
   if (!tab.url || tab.url.startsWith("chrome://") || tab.url.startsWith("chrome-extension://")) {
+    await removeHoverShield(tabId);
     return;
   }
 
   try {
     // 1. Attach debugger for color scheme emulation
-    await chrome.debugger.attach({ tabId: tab.id }, "1.3");
+    await attachDebugger(tab.id);
 
     // 2. Detect current color scheme
     const originalScheme = await detectCurrentScheme(tab.id);
     const oppositeScheme = originalScheme === "dark" ? "light" : "dark";
 
-    // 3. Small delay to let the popup fully close before capturing
-    await sleep(150);
+    // 3. Move the pointer off-page and wait for hover/focus styles to reverse
+    await dismissHoverStates(tab.id);
 
     // 4. Capture the viewport in the current color scheme
     const screenshot1 = await chrome.tabs.captureVisibleTab(null, { format: "png" });
@@ -92,11 +101,13 @@ async function captureViewport(tabId) {
 
     // 10. Generate filenames and download
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const filename1 = `docs-shotter-${originalScheme}-${timestamp}.png`;
-    const filename2 = `docs-shotter-${oppositeScheme}-${timestamp}.png`;
+    const filename1 = filenameForScheme(originalScheme, timestamp);
+    const filename2 = filenameForScheme(oppositeScheme, timestamp);
 
     await downloadDataUrl(screenshot1, filename1);
     await downloadDataUrl(screenshot2, filename2);
+
+    await removeHoverShield(tab.id);
 
     // 11. Show toast via content script (if available)
     try {
@@ -113,8 +124,9 @@ async function captureViewport(tabId) {
     }
   } catch (err) {
     console.error("Viewport capture failed:", err?.message, err?.stack);
+    await removeHoverShield(tabId);
     try {
-      await chrome.debugger.detach({ tabId: tab.id });
+      await chrome.debugger.detach({ tabId });
     } catch {
       // ignore
     }
@@ -124,14 +136,26 @@ async function captureViewport(tabId) {
 // ── Messages from popup and content script ──────────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "startCapture") {
-    // From popup — element capture mode
-    startCapture(message.tabId, message.addPadding);
-    sendResponse({ ok: true });
-  } else if (message.action === "captureViewport") {
-    // From popup — viewport capture mode
-    captureViewport(message.tabId);
-    sendResponse({ ok: true });
-  } else if (message.action === "elementSelected" && sender.tab) {
+    // Shield first so the page is inert before the popup closes and the
+    // pointer lands on the tab. Then ack so the popup can close safely.
+    (async () => {
+      await injectHoverShield(message.tabId);
+      sendResponse({ ok: true });
+      await startCapture(message.tabId, message.addPadding);
+    })();
+    return true;
+  }
+
+  if (message.action === "captureViewport") {
+    (async () => {
+      await injectHoverShield(message.tabId);
+      sendResponse({ ok: true });
+      await captureViewport(message.tabId);
+    })();
+    return true;
+  }
+
+  if (message.action === "elementSelected" && sender.tab) {
     handleElementSelected(sender.tab.id, message.rect, message.devicePixelRatio);
     sendResponse({ ok: true });
   } else if (message.action === "selectionCancelled" && sender.tab) {
@@ -146,9 +170,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 chrome.debugger.onDetach.addListener((source) => {
   const state = tabState.get(source.tabId);
   if (state) {
+    // Unexpected detach (e.g. the user dismissed the debugger infobar)
+    // while a session was still running.
     state.active = false;
     tabState.delete(source.tabId);
+    chrome.tabs
+      .sendMessage(source.tabId, { action: "stopPicking", removeToast: true })
+      .catch(() => {});
   }
+  removeHoverShield(source.tabId);
 });
 
 // ── Core capture flow ───────────────────────────────────────────────────────
@@ -163,10 +193,10 @@ async function handleElementSelected(tabId, rect, devicePixelRatio) {
 
     const paddingCss = state.addPadding ? 20 : 0;
 
-    // Ensure all extension UI is removed from the page before capturing.
-    // The content script already does this, but we double-check and wait
-    // for a full repaint cycle so nothing appears in the screenshot.
+    // Ensure picker UI is gone, but keep the hover shield so :hover
+    // does not return when the pointer is still over the element.
     await removeAllUI(tabId);
+    await dismissHoverStates(tabId);
 
     // Capture 1: current color scheme
     const screenshot1 = await captureAndCrop(tabId, rect, dpr, paddingCss);
@@ -191,8 +221,8 @@ async function handleElementSelected(tabId, rect, devicePixelRatio) {
 
     // Generate filenames
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    const filename1 = `docs-shotter-${originalScheme}-${timestamp}.png`;
-    const filename2 = `docs-shotter-${oppositeScheme}-${timestamp}.png`;
+    const filename1 = filenameForScheme(originalScheme, timestamp);
+    const filename2 = filenameForScheme(oppositeScheme, timestamp);
 
     // Download both images
     await downloadDataUrl(screenshot1, filename1);
@@ -218,7 +248,7 @@ async function handleElementSelected(tabId, rect, devicePixelRatio) {
       // ignore
     }
   } finally {
-    await cancelSession(tabId);
+    await cancelSession(tabId, { keepToast: true });
   }
 }
 
@@ -286,6 +316,89 @@ async function cropWithOffscreen(dataUrl, rect, dpr, paddingCss = 0) {
   });
 }
 
+// ── Debugger attach ─────────────────────────────────────────────────────────
+async function attachDebugger(tabId) {
+  try {
+    await chrome.debugger.attach({ tabId }, "1.3");
+  } catch (err) {
+    if (!err.message?.includes("already attached")) {
+      throw err;
+    }
+  }
+}
+
+// ── Hover / focus suppression ───────────────────────────────────────────────
+// A transparent full-viewport layer steals hit-testing so page :hover and
+// :focus-within styles clear. Kept in the DOM during capture (it has no
+// pixels of its own) and removed afterwards.
+async function injectHoverShield(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (id) => {
+        if (document.getElementById(id)) return;
+        const block = document.createElement("div");
+        block.id = id;
+        block.style.cssText = [
+          "position: fixed",
+          "inset: 0",
+          "z-index: 2147483646",
+          "background: transparent",
+          "cursor: none",
+        ].join(";");
+        document.documentElement.appendChild(block);
+        if (document.activeElement && document.activeElement.blur) {
+          document.activeElement.blur();
+        }
+      },
+      args: [HOVER_SHIELD_ID],
+    });
+  } catch (err) {
+    console.error("Failed to inject hover shield:", err);
+  }
+}
+
+async function removeHoverShield(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (id) => {
+        document.getElementById(id)?.remove();
+      },
+      args: [HOVER_SHIELD_ID],
+    });
+  } catch {
+    // ignore
+  }
+}
+
+async function dismissHoverStates(tabId) {
+  try {
+    await chrome.debugger.sendCommand({ tabId }, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: -100,
+      y: -100,
+    });
+  } catch {
+    // debugger may not be attached yet
+  }
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        if (document.activeElement && document.activeElement.blur) {
+          document.activeElement.blur();
+        }
+      },
+    });
+  } catch {
+    // ignore
+  }
+
+  await sleep(HOVER_CLEAR_DELAY_MS);
+}
+
 // ── Debugger / Emulation helpers ────────────────────────────────────────────
 async function detectCurrentScheme(tabId) {
   try {
@@ -349,6 +462,7 @@ async function removeAllUI(tabId) {
       func: () => {
         return new Promise((resolve) => {
           // Remove any lingering extension elements
+          // Keep ds-hover-block in place so page :hover does not return.
           const ids = ["ds-highlight-overlay", "ds-highlight-label", "ds-toast"];
           for (const id of ids) {
             const el = document.getElementById(id);
@@ -381,15 +495,20 @@ async function downloadDataUrl(dataUrl, filename) {
 }
 
 // ── Session cleanup ─────────────────────────────────────────────────────────
-async function cancelSession(tabId) {
+async function cancelSession(tabId, { keepToast = false } = {}) {
   const state = tabState.get(tabId);
   tabState.delete(tabId);
 
   try {
-    await chrome.tabs.sendMessage(tabId, { action: "stopPicking" });
+    await chrome.tabs.sendMessage(tabId, {
+      action: "stopPicking",
+      removeToast: !keepToast,
+    });
   } catch {
     // ignore
   }
+
+  await removeHoverShield(tabId);
 
   if (state?.active) {
     try {

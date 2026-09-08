@@ -92,7 +92,7 @@
   }
 
   // ── Toast notification ──────────────────────────────────────────────────
-  function showToast(message, isError = false) {
+  function showToast(message, isError = false, durationMs = 3000) {
     removeToast();
     toast = document.createElement("div");
     toast.id = "ds-toast";
@@ -120,7 +120,7 @@
         toast.style.opacity = "0";
         setTimeout(removeToast, 300);
       }
-    }, 3000);
+    }, durationMs);
   }
 
   function removeToast() {
@@ -129,14 +129,16 @@
   }
 
   // ── Event handlers ──────────────────────────────────────────────────────
+  function pageElementFromPoint(x, y) {
+    const els = document.elementsFromPoint(x, y);
+    return els.find((el) => !el.id?.startsWith("ds-")) || null;
+  }
+
   function onMouseMove(e) {
     if (!active) return;
 
-    const el = document.elementFromPoint(e.clientX, e.clientY);
-    if (!el || el === overlay || el === label) return;
-
-    // Skip our own elements
-    if (el.id?.startsWith("ds-")) return;
+    const el = pageElementFromPoint(e.clientX, e.clientY);
+    if (!el) return;
 
     hoveredElement = el;
     updateOverlay(el);
@@ -157,6 +159,9 @@
     e.stopPropagation();
     e.stopImmediatePropagation();
 
+    if (!hoveredElement) {
+      hoveredElement = pageElementFromPoint(e.clientX, e.clientY);
+    }
     if (!hoveredElement) return;
 
     // Lock the selected element immediately so subsequent mousemove
@@ -205,19 +210,36 @@
     }
   }
 
+  function ensureHoverShield() {
+    let block = document.getElementById("ds-hover-block");
+    if (!block) {
+      block = document.createElement("div");
+      block.id = "ds-hover-block";
+      block.style.cssText = `
+        position: fixed;
+        inset: 0;
+        z-index: 2147483646;
+        background: transparent;
+      `;
+      document.documentElement.appendChild(block);
+    }
+    block.style.cursor = "crosshair";
+  }
+
   // ── Start / stop picking ────────────────────────────────────────────────
   function startPicking() {
     if (active) return;
     active = true;
     hoveredElement = null;
 
+    // Steal hit-testing so page :hover never activates while picking.
+    ensureHoverShield();
     createOverlay();
     document.addEventListener("mousemove", onMouseMove, true);
     document.addEventListener("click", onClick, true);
     document.addEventListener("mousedown", onMouseDown, true);
     document.addEventListener("keydown", onKeyDown, true);
 
-    // Change cursor to crosshair
     document.documentElement.style.cursor = "crosshair";
 
     showToast("Click an element to capture. Press Esc to cancel.");
@@ -243,10 +265,10 @@
       sendResponse({ ok: true });
     } else if (message.action === "stopPicking") {
       stopPicking();
-      removeToast();
+      if (message.removeToast) removeToast();
       sendResponse({ ok: true });
     } else if (message.action === "captureComplete") {
-      showToast(`Saved: ${message.filenames.join(", ")}`);
+      showToast(`Saved: ${message.filenames.join(", ")}`, false, 1500);
       cleanup();
       sendResponse({ ok: true });
     } else if (message.action === "captureError") {
@@ -257,7 +279,8 @@
     return false;
   });
 
-  // Remove every DOM element injected by this extension (belt-and-suspenders)
+  // Remove picker chrome before capture. Leave ds-hover-block so the page
+  // stays in its rest state while the screenshot is taken.
   function removeAllExtensionUI() {
     const ids = ["ds-highlight-overlay", "ds-highlight-label", "ds-toast"];
     for (const id of ids) {

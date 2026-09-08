@@ -15,31 +15,36 @@ checkbox.addEventListener("change", () => {
   chrome.storage.local.set({ addPadding: checkbox.checked });
 });
 
-// Start element capture
-captureBtn.addEventListener("click", async () => {
+async function triggerCapture(message) {
+  captureBtn.disabled = true;
+  viewportBtn.disabled = true;
+
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
 
-  chrome.runtime.sendMessage({
+  // Await the service worker handshake before closing. If the SW is asleep,
+  // closing immediately tears down the message port and the first click is lost.
+  const payload = { ...message, tabId: tab.id };
+  try {
+    await chrome.runtime.sendMessage(payload);
+  } catch {
+    try {
+      await chrome.runtime.sendMessage(payload);
+    } catch (err) {
+      console.error("Docs Shotter: failed to reach service worker", err);
+    }
+  }
+
+  window.close();
+}
+
+captureBtn.addEventListener("click", () =>
+  triggerCapture({
     action: "startCapture",
-    tabId: tab.id,
     addPadding: checkbox.checked,
-  });
+  })
+);
 
-  // Close the popup so it doesn't appear in the screenshot
-  window.close();
-});
-
-// Start viewport capture
-viewportBtn.addEventListener("click", async () => {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab) return;
-
-  chrome.runtime.sendMessage({
-    action: "captureViewport",
-    tabId: tab.id,
-  });
-
-  // Close the popup so it doesn't appear in the screenshot
-  window.close();
-});
+viewportBtn.addEventListener("click", () =>
+  triggerCapture({ action: "captureViewport" })
+);
