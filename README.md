@@ -7,8 +7,7 @@ A Chrome extension that captures any DOM element or the full viewport as PNG scr
 - **Element capture** -- click any element on the page to screenshot just that element
 - **Viewport capture** -- capture the entire visible viewport
 - **Automatic light/dark** -- every capture produces two PNGs, one per color scheme
-- **Optional padding** -- adds 20px of color-matched padding around element captures
-- **Smart padding colors** -- padding is filled by sampling the corner pixels of the captured element, so it blends naturally with the content
+- **Optional context** -- include 20px of surrounding page around element captures
 
 ## How it works
 
