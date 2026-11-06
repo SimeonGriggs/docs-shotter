@@ -463,10 +463,14 @@ async function removeAllUI(tabId) {
         return new Promise((resolve) => {
           // Remove any lingering extension elements
           // Keep ds-hover-block in place so page :hover does not return.
-          const ids = ["ds-highlight-overlay", "ds-highlight-label", "ds-toast"];
-          for (const id of ids) {
-            const el = document.getElementById(id);
-            if (el) el.remove();
+          document
+            .querySelectorAll("#ds-highlight-overlay, #ds-highlight-label, #ds-toast")
+            .forEach((el) => el.remove());
+          const block = document.getElementById("ds-hover-block");
+          if (block) block.style.cursor = "none";
+          document.documentElement.style.cursor = "";
+          if (document.activeElement && document.activeElement.blur) {
+            document.activeElement.blur();
           }
           // Double-rAF: first rAF schedules work before next paint,
           // second rAF ensures that paint has been
