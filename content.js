@@ -282,18 +282,19 @@
   // Remove picker chrome before capture. Leave ds-hover-block so the page
   // stays in its rest state while the screenshot is taken.
   function removeAllExtensionUI() {
-    const ids = ["ds-highlight-overlay", "ds-highlight-label", "ds-toast"];
-    for (const id of ids) {
-      const el = document.getElementById(id);
-      if (el) el.remove();
-    }
+    document
+      .querySelectorAll("#ds-highlight-overlay, #ds-highlight-label, #ds-toast")
+      .forEach((el) => el.remove());
+    const block = document.getElementById("ds-hover-block");
+    if (block) block.style.cursor = "none";
     overlay = null;
     label = null;
     toast = null;
   }
 
   function cleanup() {
+    // Keep __docsShotter_injected set: this script's listener stays alive,
+    // so re-injecting would create a second picker (and a stray overlay).
     window.__docsShotter_selectedElement = null;
-    window.__docsShotter_injected = false;
   }
 })();
