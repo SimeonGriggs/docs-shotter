@@ -1,5 +1,5 @@
 // Docs Shotter - Popup Script (popup.js)
-// Manages the padding checkbox state and triggers capture via the service worker.
+// Manages the "include 20px around element" checkbox and triggers capture.
 
 const checkbox = document.getElementById("padding-checkbox");
 const captureBtn = document.getElementById("capture-btn");
